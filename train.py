@@ -21,10 +21,21 @@ from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, confusion_m
 from models import RadFormer
 from PIL import Image
 
-#import neptune.new as neptune
+import wandb
+wandb.require("core")
+from tqdm import tqdm
 
-#np.set_printoptions(threshold = np.nan)
-
+# Set random seeds for reproducibility
+import random
+random.seed(42)
+cv2.setRNGSeed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 N_CLASSES = 3
 CLASS_NAMES = ['nrml', 'benign', 'malg']
@@ -35,10 +46,9 @@ def parse():
     parser.add_argument('--img_dir', dest="img_dir", default="data/gb_imgs")
     parser.add_argument('--train_list', dest="train_list", default="data/cls_split/train.txt")
     parser.add_argument('--val_list', dest="val_list", default="data/cls_split/val.txt")
-    parser.add_argument('--meta_file', dest="meta_file", default="data/res.json")
     parser.add_argument('--out_channels', dest="out_channels", default=2048, type=int)
     parser.add_argument('--epochs', dest="epochs", default=30, type=int)
-    parser.add_argument('--save_dir', dest="save_dir", default="expt")
+    parser.add_argument('--save_dir', dest="save_dir", default="experiments/replication")
     parser.add_argument('--save_name', dest="save_name", default="attnbag")
     parser.add_argument('--batch_size', dest="batch_size", default=16, type=int)
     parser.add_argument('--lr', dest="lr", default=0.001, type=float)
@@ -52,25 +62,27 @@ def parse():
     parser.add_argument('--fusion_type', dest="fusion_type", default="+") #or *
     parser.add_argument('--optim', dest="optim", default="adam")
     parser.add_argument('--num_layers', dest="num_layers", default=2, type=int)
+    parser.add_argument('--wandb_project', dest="wandb_project", default="radformer", type=str)
+    parser.add_argument('--wandb_name', dest="wandb_name", default="replication", type=str)
     args = parser.parse_args()
     return args
 
 
 def main(args):
+    wandb.init(
+        project=args.wandb_project,
+        name=args.wandb_name,
+        config=args
+    )
+
     print('********************load data********************')
     
     normalize = transforms.Normalize([0.485, 0.456, 0.406],
                                      [0.229, 0.224, 0.225])
 
-    with open(args.meta_file, "r") as f:
-        df = json.load(f)
-
     train_dataset = GbUsgDataSet(data_dir=args.img_dir,
                             image_list_file=args.train_list,
-                            #df=df,
-                            #train=True,
                             transform=transforms.Compose([
-                                #transforms.Resize((224,224)),
                                 transforms.Resize(224),
                                 transforms.CenterCrop(224),
                                 transforms.ToTensor(),
@@ -82,10 +94,7 @@ def main(args):
     
     val_dataset = GbUsgDataSet(data_dir=args.img_dir, 
                             image_list_file=args.val_list,
-                            #df=df,
-                            #train=True,
                             transform=transforms.Compose([
-                                #transforms.Resize((224,224)),
                                 transforms.Resize(224),
                                 transforms.CenterCrop(224),
                                 transforms.ToTensor(),
@@ -117,33 +126,31 @@ def main(args):
     lr_sched = lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 1)
     print('********************load model succeed!********************')
 
+    print('********************initialisation results!********************')
+    y_true, pred_g, pred_l, pred_f = validate(model, val_loader)
+                
+    acc_g, conf_g = log_stats(y_true, pred_g, label="Global")
+    acc_l, conf_l = log_stats(y_true, pred_l, label="Local")
+    acc_f, conf_f = log_stats(y_true, pred_f, label="Fusion")
+
+    print('Initial Global Accuracy:', acc_g)
+    print(conf_g)
+    print('Initial Local Accuracy:', acc_l)
+    print(conf_l)
+    print('Initial Fusion Accuracy:', acc_f)
+    print(conf_f)
+
     save_path = args.save_dir
     os.makedirs(save_path, exist_ok=True)
     save_model_name = args.save_name
     best_accs = [0, 0, 0]
     best_ep = 0
 
-    # credentials for neptune board
-    """
-    run = neptune.init(project='sbasu276/attn-transformer',
-            api_token='eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIzNjgzZTk5Yi0xNmFlLTQ4YTAtODBhZS0xOGRmNzdlMTFhMmEifQ==')
-
-    #run.create_experiment(args.expt_name)
-    run["parameters"] = {
-                        "LR": args.lr,
-                        "batch size": args.batch_size,
-                        "optimizer": args.optim,
-                        "local net": args.local_net,
-                        "data": "Full Sized",
-                        "num_layers": args.num_layers,
-                        "g_weight": args.global_weight,
-                        "l_weight": args.local_weight,
-                        "f_weight": args.fusion_weight,
-                        "f_type": args.fusion_type,
-                    }
-    """
-
     print('********************begin training!********************')
+    wandb.watch(model)
+
+    global_step = 0
+    validation_frequency = int(np.round(len(train_loader)/4))
     for epoch in range(args.epochs):
         print('Epoch {}/{}'.format(epoch , args.epochs - 1))
         print('-' * 10)
@@ -151,7 +158,7 @@ def main(args):
         model.train()  #set model to training mode
         running_loss = 0.0
         #Iterate over data
-        for i, (global_inp, target, filenames) in enumerate(train_loader):
+        for i, (global_inp, target, filenames) in enumerate(tqdm(train_loader)):
             global_input_var = torch.autograd.Variable(global_inp.cuda())
             target_var = torch.autograd.Variable(target.cuda())
             
@@ -160,6 +167,14 @@ def main(args):
             loss.backward() 
             optimizer.step()  
             running_loss += loss.data.item()
+            wandb.log({"train_loss": loss.item(), "epoch": epoch}, step=global_step)
+
+            if (i+1) % validation_frequency == 0:
+                val_loss = validate(model, val_loader, get_loss=True)
+                wandb.log({"val_loss": val_loss, "epoch": epoch}, step=global_step)
+                model.train()
+
+            global_step += 1
 
         print('Loss: {:.5f}'.format(running_loss/len(train_loader)))
 
@@ -171,15 +186,16 @@ def main(args):
         acc_g, conf_g = log_stats(y_true, pred_g, label="Global")
         acc_l, conf_l = log_stats(y_true, pred_l, label="Local")
         acc_f, conf_f = log_stats(y_true, pred_f, label="Fusion")
+        wandb.log({"global_accuracy": acc_g, "local_accuracy": acc_l, "fusion_accuracy": acc_f, "epoch": epoch}, step=global_step)
 
 
         #save
-        torch.save(model.state_dict(), save_path+"/"+save_model_name+'_epoch_'+str(epoch)+'.pkl')
+        # torch.save(model.state_dict(), save_path+"/"+save_model_name+'_epoch_'+str(epoch)+'.pkl')
         if best_accs[0] < acc_f: #max(acc_g, acc_l, acc_f):
             best_accs = [acc_f, acc_l, acc_g] #max(acc_g, acc_l, acc_f)
             best_ep = epoch
             best_cfms = [conf_f, conf_l, conf_g]
-            #torch.save(model.state_dict(), save_path+"/"+save_model_name+'_epoch_'+str(epoch)+'.pkl')
+            torch.save(model.state_dict(), save_path+"/"+save_model_name+'_best.pth')
             #print('Best acc model saved!')
 
         # LR schedular step
@@ -206,22 +222,30 @@ def get_pred_label(pred_tensor):
     return pred.item()
 
 
-def validate(model, val_loader):
+def validate(model, val_loader, get_loss=False):
     model.eval()
     y_true, pred_g, pred_l, pred_f = [], [], [], []
+    val_loss = 0
     for i, (global_inp, target, filenames) in enumerate(val_loader):
         with torch.no_grad():
             global_input_var = torch.autograd.Variable(global_inp.cuda())
             target_var = torch.autograd.Variable(target.cuda())
             
-            g_out, l_out, f_out, _ = model(global_input_var)
+            if get_loss:
+                loss = model(global_input_var, target_var)
+                val_loss += loss
+            else:
+                g_out, l_out, f_out, _ = model(global_input_var)
             
-            y_true.append(target.tolist()[0])
-            pred_g.append(get_pred_label(g_out))
-            pred_l.append(get_pred_label(l_out)) 
-            pred_f.append(get_pred_label(f_out)) 
+                y_true.append(target.tolist()[0])
+                pred_g.append(get_pred_label(g_out))
+                pred_l.append(get_pred_label(l_out)) 
+                pred_f.append(get_pred_label(f_out)) 
 
-    return y_true, pred_g, pred_l, pred_f
+    if get_loss:
+        return val_loss/len(val_loader)
+    else:
+        return y_true, pred_g, pred_l, pred_f
 
 
 if __name__ == "__main__":

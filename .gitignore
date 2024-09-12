@@ -4,3 +4,4 @@ out_score
 data
 GBCU_dataset
 experiments
+wandb
