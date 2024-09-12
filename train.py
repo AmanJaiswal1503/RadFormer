@@ -44,8 +44,8 @@ CLASS_NAMES = ['nrml', 'benign', 'malg']
 def parse():
     parser = argparse.ArgumentParser(description='Process arguments')
     parser.add_argument('--img_dir', dest="img_dir", default="data/gb_imgs")
-    parser.add_argument('--train_list', dest="train_list", default="data/cls_split/train.txt")
-    parser.add_argument('--val_list', dest="val_list", default="data/cls_split/val.txt")
+    parser.add_argument('--train_list', dest="train_list", nargs='+', default="data/cls_split/train.txt")
+    parser.add_argument('--val_list', dest="val_list", nargs='+', default="data/cls_split/val.txt")
     parser.add_argument('--out_channels', dest="out_channels", default=2048, type=int)
     parser.add_argument('--epochs', dest="epochs", default=30, type=int)
     parser.add_argument('--save_dir', dest="save_dir", default="experiments/replication")
@@ -81,7 +81,7 @@ def main(args):
                                      [0.229, 0.224, 0.225])
 
     train_dataset = GbUsgDataSet(data_dir=args.img_dir,
-                            image_list_file=args.train_list,
+                            image_list_files=args.train_list,
                             transform=transforms.Compose([
                                 transforms.Resize(224),
                                 transforms.CenterCrop(224),
@@ -93,7 +93,7 @@ def main(args):
                                 shuffle=True, num_workers=0)
     
     val_dataset = GbUsgDataSet(data_dir=args.img_dir, 
-                            image_list_file=args.val_list,
+                            image_list_files=args.val_list,
                             transform=transforms.Compose([
                                 transforms.Resize(224),
                                 transforms.CenterCrop(224),

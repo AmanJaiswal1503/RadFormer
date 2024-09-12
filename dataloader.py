@@ -41,7 +41,7 @@ class GbFeatureDataSet(Dataset):
 
 
 class GbUsgDataSet(Dataset):
-    def __init__(self, data_dir, image_list_file, to_blur=False, sigma=0, transform=None):
+    def __init__(self, data_dir, image_list_files, to_blur=False, sigma=0, transform=None):
         """
         Args:
             data_dir: path to image directory.
@@ -51,14 +51,15 @@ class GbUsgDataSet(Dataset):
         """
         image_names = []
         labels = []
-        with open(image_list_file, "r") as f:
-            for line in f:
-                items = line.split(",")
-                image_name= items[0]
-                label = int(items[1])
-                image_name = os.path.join(data_dir, image_name)
-                image_names.append(image_name)
-                labels.append(label)
+        for image_list_file in image_list_files:
+            with open(image_list_file, "r") as f:
+                for line in f:
+                    items = line.split(",")
+                    image_name= items[0]
+                    label = int(items[1])
+                    image_name = os.path.join(data_dir, image_name)
+                    image_names.append(image_name)
+                    labels.append(label)
         self.image_names = image_names
         self.labels = labels
         self.transform = transform
